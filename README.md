@@ -206,6 +206,7 @@ Domain: dh-app-backend-xxxx-dev.twil.io
 Functions:
    https://dh-app-backend-xxxx-dev.twil.io/token  (protected)
    https://dh-app-backend-xxxx-dev.twil.io/voice
+   https://dh-app-backend-xxxx-dev.twil.io/rejectCall
 ```
 
 Copy your **domain** (`dh-app-backend-xxxx-dev.twil.io`) — you will need it in Part 2.
@@ -228,6 +229,8 @@ twilio api:core:applications:update \
 
 - `deliveryId` — used as the Twilio queue name (sanitised to a safe string)
 - `mode` — either `caller` (enqueues the call into the named queue) or `callee` (dials out of the named queue to connect to the waiting caller)
+
+**`/rejectCall`** — accepts a POST with an `deliveryId` field which is used to identify the first call in a voice queue with the same name, and update it to hangup the call. Note: Production, the call sid should be sent in the parameter to reduce the steps to identify the first call in the voice queue. Additionally, the Call Status Sync document will also be updated with the call status of rejected.
 
 ---
 
@@ -295,10 +298,13 @@ The app UI has two fields and two buttons:
 | Variable | Description |
 |---|---|
 | `ACCOUNT_SID` | Twilio Account SID (`ACxxxx`) |
-| `AUTH_TOKEN` | Twilio Auth Token |
+| `AUTH_TOKEN` | Twilio Auth Token in IE Region |
+| `AUTH_TOKEN_US` | Twilio Auth Token in US Region |
 | `API_KEY_SID` | API Key SID (`SKxxxx`) — used to sign access tokens |
 | `API_SECRET` | API Key secret — used to sign access tokens |
 | `TWIML_VOICE_APP_SID` | TwiML Application SID (`APxxxx`) — included in the Voice Grant |
+| `TWILIO_SYNC_SERVICE_SID` | Default Twilio Sync Service Instance Id |
+
 
 > ⚠️ Never commit `.env` to source control. It is already listed in `.gitignore`.
 
