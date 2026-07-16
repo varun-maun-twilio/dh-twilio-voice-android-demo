@@ -393,7 +393,7 @@ public class MainActivity extends AppCompatActivity {
     private void openDocumentForCall(String deliveryId) {
         String documentName = "call-status-" + deliveryId;
 
-        syncClient.openDocument(SyncOptions.create().withUniqueName(documentName),callStatusListener,
+        syncClient.openDocument(SyncOptions.create().withUniqueName(documentName).withTtl(3600),callStatusListener,
                 new SuccessListener<SyncDocument>() {
                     @Override
                     public void onSuccess(@NonNull SyncDocument document) {
