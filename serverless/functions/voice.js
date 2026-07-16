@@ -18,7 +18,7 @@ exports.handler = function (context, event, callback) {
   const voiceQueueName = deliveryId.replace(/[^a-zA-Z0-9_\-\.]/g, '_').substring(0, 128);
 
   if(mode==='caller'){
-      twiml.enqueue({waitUrl:'https://handler.twilio.com/twiml/EH10fc9b66767e0f70d022428ef697836e'},voiceQueueName);
+      twiml.enqueue({waitUrl:'https://handler.twilio.com/twiml/EHXXXXXX'},voiceQueueName);
   }
   else{
     const dial = twiml.dial();

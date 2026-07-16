@@ -19,9 +19,18 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+
+import com.twilio.util.ErrorInfo;
 import com.twilio.voice.CallException;
 import com.twilio.voice.ConnectOptions;
 import com.twilio.voice.Voice;
+
+import com.twilio.sync.EventContext;
+import com.twilio.sync.SyncClient;
+import com.twilio.sync.SyncDocument;
+import com.twilio.sync.SyncDocumentObserver;
+import com.twilio.sync.SyncOptions;
+import com.twilio.sync.SuccessListener;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -43,13 +52,18 @@ public class MainActivity extends AppCompatActivity {
 
     // ── Replace with your Twilio Serverless Function URL ──────────────────────
     private static final String TOKEN_SERVER_URL =
-            "https://dh-app-backend-XXXX-dev.twil.io/token";
+            "https://dh-app-backend-XXXX-dev.dublin.ie1.twil.io";
+
+
+
     // ──────────────────────────────────────────────────────────────────────────
 
     private EditText etIdentity;
     private EditText etDeliveryId;
     private Button   btnDial;
     private Button   btnDialIn;
+
+    private Button btnReject;
     private View     layoutCallControls;
     private Button   btnMute;
     private Button   btnHangup;
@@ -59,6 +73,25 @@ public class MainActivity extends AppCompatActivity {
     private com.twilio.voice.Call activeCall;
     private OkHttpClient httpClient = new OkHttpClient();
     private boolean isMuted = false;
+
+    private String currentDeliveryId;
+    private String currentSyncToken;
+
+
+    // ──  Sync client types ───────────────────────────────────────────
+    private SyncClient syncClient;
+    private SyncDocument callStatusDocument;
+
+    private final SyncDocumentObserver callStatusListener = new SyncDocumentObserver() {
+
+        @Override
+        public void onUpdated(EventContext context, JSONObject data, JSONObject prevData) {
+            handleCallStatusDocumentUpdate(data);
+        }
+
+
+    };
+
 
     // ── Twilio Call Listener ───────────────────────────────────────────────────
     private com.twilio.voice.Call.Listener callListener = new com.twilio.voice.Call.Listener() {
@@ -79,9 +112,12 @@ public class MainActivity extends AppCompatActivity {
 
         @Override
         public void onConnected(@NonNull com.twilio.voice.Call call) {
+            Log.e(TAG, "**** Call Connected: "+call.getSid()+" - "+currentDeliveryId);
             activeCall = call;
             setCallStatus("In conference");
             showCallControls();
+            startListeningForCallStatus(currentDeliveryId);
+
         }
 
         @Override
@@ -98,9 +134,14 @@ public class MainActivity extends AppCompatActivity {
         @Override
         public void onDisconnected(@NonNull com.twilio.voice.Call call,
                                    CallException e) {
+
+            Log.e(TAG, "**** Call Disconnected: "+call.getSid());
+            Log.e(TAG, "**** Call State: "+call.getState());
+            Log.e(TAG, "**** Disconnected With Reason: " + ((callStatusDocument!=null)?callStatusDocument.getData().optString("disconnectReason"):"None"));
             activeCall = null;
             setCallStatus("Call ended");
             resetUI();
+            tvCallStatus.postDelayed(MainActivity.this::stopListeningForCallStatus, 5000);
         }
 
         @Override
@@ -120,6 +161,7 @@ public class MainActivity extends AppCompatActivity {
         etDeliveryId        = findViewById(R.id.etDeliveryId);
         btnDial             = findViewById(R.id.btnDial);
         btnDialIn             = findViewById(R.id.btnDialIn);
+        btnReject             = findViewById(R.id.btnReject);
         layoutCallControls  = findViewById(R.id.layoutCallControls);
         btnMute             = findViewById(R.id.btnMute);
         btnHangup           = findViewById(R.id.btnHangup);
@@ -128,6 +170,7 @@ public class MainActivity extends AppCompatActivity {
 
         btnDial.setOnClickListener(v -> onDialClicked("caller"));
         btnDialIn.setOnClickListener(v -> onDialClicked("callee"));
+        btnReject.setOnClickListener(v-> onRejectClicked());
         btnMute.setOnClickListener(v -> onMuteClicked());
         btnHangup.setOnClickListener(v -> onHangupClicked());
 
@@ -155,6 +198,18 @@ public class MainActivity extends AppCompatActivity {
         fetchTokenAndDial(identity, deliveryId, mode);
     }
 
+    private void onRejectClicked() {
+        String deliveryId = etDeliveryId.getText().toString().trim();
+        if (deliveryId.isEmpty()) {
+            etDeliveryId.setError("Enter the delivery ID");
+            return;
+        }
+        rejectCall(deliveryId);
+
+    }
+
+
+
     private void onMuteClicked() {
         if (activeCall != null) {
             isMuted = !isMuted;
@@ -177,11 +232,11 @@ public class MainActivity extends AppCompatActivity {
                 .build();
 
         Request request = new Request.Builder()
-                .url(TOKEN_SERVER_URL)
+                .url(TOKEN_SERVER_URL+"/token")
                 .post(body)
                 .build();
 
-        httpClient.newCall(request).enqueue(new Callback() {
+        httpClient.newCall(request).enqueue(new okhttp3.Callback() {
             @Override
             public void onFailure(@NonNull okhttp3.Call call, @NonNull IOException e) {
                 Log.e(TAG, "Token fetch failed: " + e.getMessage());
@@ -211,8 +266,13 @@ public class MainActivity extends AppCompatActivity {
                 }
                 try {
                     String json  = response.body().string();
-                    String token = new JSONObject(json).getString("token");
-                    runOnUiThread(() -> dialConference(token, deliveryId,mode));
+                                       JSONObject responseJson = new JSONObject(json);
+                    String voiceToken = responseJson.getString("token");
+                    String syncToken  = responseJson.getString("syncToken");
+                    currentSyncToken = syncToken;
+                    runOnUiThread(() -> dialConference(voiceToken, deliveryId,mode));
+
+                   
                 } catch (JSONException e) {
                     runOnUiThread(() -> {
                         setCallStatus("Invalid token response");
@@ -223,7 +283,64 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    private void rejectCall(String deliveryId) {
+        RequestBody body = new FormBody.Builder()
+                .add("deliveryId",   deliveryId)
+                .build();
+
+        Request request = new Request.Builder()
+                .url(TOKEN_SERVER_URL+"/rejectCall")
+                .post(body)
+                .build();
+
+        httpClient.newCall(request).enqueue(new okhttp3.Callback() {
+            @Override
+            public void onFailure(@NonNull okhttp3.Call call, @NonNull IOException e) {
+                Log.e(TAG, "Reject Call failed: " + e.getMessage());
+                runOnUiThread(() -> {
+                    setCallStatus("Failed to Reject Call");
+                    resetUI();
+                });
+            }
+
+            @Override
+            public void onResponse(@NonNull okhttp3.Call call,
+                                   @NonNull Response response) throws IOException {
+                if (!response.isSuccessful()) {
+                    runOnUiThread(() -> {
+                        String errorReason = "";
+                        try {
+                            String json = response.body().string();
+                            errorReason = new JSONObject(json).getString("error");
+                        }catch(Exception ex1){
+                        }
+
+
+                        setCallStatus("Reject Call Server Error: " + ((!errorReason.isEmpty())?errorReason:response.code()));
+                        resetUI();
+                    });
+                    return;
+                }
+                try {
+                    String json  = response.body().string();
+                    JSONObject responseJson = new JSONObject(json);
+
+
+                } catch (JSONException e) {
+                    runOnUiThread(() -> {
+                        setCallStatus("Reject Call Invalid Response");
+                        resetUI();
+                    });
+                }
+            }
+        });
+    }
+
+
     private void dialConference(String accessToken, String deliveryId, String mode) {
+        currentDeliveryId = deliveryId;
+
+
         HashMap<String, String> params = new HashMap<>();
         params.put("deliveryId", deliveryId);
         params.put("mode",mode);
@@ -234,9 +351,86 @@ public class MainActivity extends AppCompatActivity {
                 .params(params)
                 .build();
 
+        Voice.setEdge("dublin");
+
         activeCall = Voice.connect(this, connectOptions, callListener);
         tvConferenceLabel.setText("Call Queue: " + deliveryId);
     }
+
+    // ── Sync Integration  ───────────────────────────────────
+
+    private void startListeningForCallStatus(String deliveryId) {
+        if (deliveryId == null || deliveryId.isEmpty()) {
+            Log.e(TAG, "No delivery ID available, cannot subscribe to call status");
+            return;
+        }
+        if (currentSyncToken == null || currentSyncToken.isEmpty()) {
+            Log.e(TAG, "No sync token available, cannot subscribe to call status");
+            return;
+        }
+        openCallStatusDocument(currentSyncToken, deliveryId);
+    }
+
+    private void openCallStatusDocument(String syncToken, String deliveryId) {
+        if (syncClient != null) {
+            openDocumentForCall(deliveryId);
+            return;
+        }
+
+        Log.d(TAG, "Sync Token----"+syncToken);
+
+        SyncClient.create(getApplicationContext(),syncToken,SyncClient.Properties.defaultProperties(),new SuccessListener<SyncClient>(){
+            @Override
+            public void onSuccess(@NonNull SyncClient result) {
+                syncClient = result;
+                openDocumentForCall(deliveryId);
+            }
+        });
+
+
+    }
+
+    private void openDocumentForCall(String deliveryId) {
+        String documentName = "call-status-" + deliveryId;
+
+        syncClient.openDocument(SyncOptions.create().withUniqueName(documentName),callStatusListener,
+                new SuccessListener<SyncDocument>() {
+                    @Override
+                    public void onSuccess(@NonNull SyncDocument document) {
+                        callStatusDocument = document;
+                        Log.d(TAG, "Subscribed to " + documentName);
+                        // Handle the case where the backend already wrote data
+                        // before our subscription was established.
+                        handleCallStatusDocumentUpdate(document.getData());
+                    }
+
+
+                });
+    }
+
+    private void handleCallStatusDocumentUpdate(JSONObject document) {
+        JSONObject data = document;
+        String disconnectReason = data.optString("disconnectReason", null);
+        int sipResponseCode = data.optInt("sipResponseCode", -1);
+        Log.d(TAG, "Backend-reported disconnect reason: " + disconnectReason
+                + ", SIP response code: " + sipResponseCode);
+        runOnUiThread(() -> {
+            if (disconnectReason != null && !disconnectReason.isEmpty()) {
+                setCallStatus("Call ended: " + disconnectReason);
+            }
+        });
+    }
+
+    private void stopListeningForCallStatus() {
+        if (callStatusDocument != null) {
+            callStatusDocument = null;
+        }
+        if (syncClient != null) {
+            syncClient.shutdown();
+            syncClient = null;
+        }
+    }
+
 
     // ── UI Helpers ─────────────────────────────────────────────────────────────
 
@@ -301,6 +495,7 @@ public class MainActivity extends AppCompatActivity {
             activeCall.disconnect();
             activeCall = null;
         }
+        stopListeningForCallStatus();
         super.onDestroy();
     }
 }

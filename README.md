@@ -1,18 +1,107 @@
 # Twilio Voice Android Demo — Delivery Hero
 
-A demo Android application that connects a **caller** (e.g. a customer or dispatcher) and a **callee** (e.g. a delivery driver) through a Twilio Voice queue, without either party knowing the other's phone number. The backend is a [Twilio Serverless](https://www.twilio.com/docs/serverless/functions-assets/functions) service; the Android client uses the [Twilio Voice Android SDK](https://www.twilio.com/docs/voice/sdks/android).
+A demo Android application that connects a **caller** (e.g. a customer or dispatcher) and a **callee** (e.g. a delivery driver) through a Twilio Voice queue, without either party knowing the other's phone number. The backend is a [Twilio Serverless](https://www.twilio.com/docs/serverless/functions-assets/functions) service; the Android client uses the [Twilio Voice Android SDK](https://www.twilio.com/docs/voice/sdks/android) and [Twilio Sync Android SDK](https://www.twilio.com/docs/sync/sync-sdk-download#android-sdk)
 
 ```
 ┌─────────────────────┐        ┌──────────────────────┐
 │  Android App        │        │  Twilio Serverless   │
 │  (caller mode)      │──────▶ │  /token              │
 │                     │        │  /voice  (TwiML)     │
+│                     │        │  /rejectCall         │
 │  Android App        │──────▶ │                      │
 │  (callee mode)      │        │  Twilio Voice Queue  │
 └─────────────────────┘        └──────────────────────┘
 ```
 
 ---
+
+# Twilio Voice — Caller/Callee Call Setup & Accept/Reject Flow
+
+This diagram documents the end-to-end call setup flow between a Caller App and Callee App using Twilio Voice SDK, Twilio Sync SDK, Serverless functions, and a TwiML App — covering token issuance, call setup, out-of-band callee notification, Sync-based call status tracking, and the accept/reject branches.
+
+## Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    actor Caller
+    box rgb(224,242,254) Caller App
+        participant CA1 as Caller App
+        participant CA1V as Twilio Voice SDK
+        participant CA1S as Twilio Sync SDK
+    end
+    box rgb(254,249,195) Twilio
+        participant Serverless
+        participant TwiApp as TwiML App
+        participant Voice
+        participant TwilioSync as Twilio Sync
+    end
+    box rgb(220,252,231) Callee App
+        participant CA2 as Callee App
+        participant CA2V as Twilio Voice SDK
+        participant CA2S as Twilio Sync SDK
+    end
+    actor Callee
+
+    Caller->>CA1: Call Callee
+    CA1->>Serverless: REST API call to /token (identity)
+    Serverless-->>CA1: Sync & Voice tokens
+    CA1->>CA1V: Initiate call
+    CA1V->>TwiApp: Fetch TwiML (mode=caller)
+    TwiApp->>Serverless: Request TwiML (/voice)
+    Serverless-->>TwiApp: Generated TwiML
+    Serverless-->>CA2: Out-of-band notification (callSid, deliveryId)
+    TwiApp-->>CA1V: TwiML (Enqueue)
+    CA1V->>Voice: Setup call
+    Voice-->>CA1V: Call connected
+    CA1V-->>CA1: Call connected
+    CA1->>CA1S: Create Sync document (call status)
+    CA1S->>TwilioSync: Create Sync document
+    TwilioSync-->>CA1S: Document creation response
+    CA1S-->>CA1: Document created
+    CA1->>CA1S: Subscribe to updates (call status document)
+    CA1S->>TwilioSync: Setup observer
+    TwilioSync-->>CA1S: ok
+    CA1S-->>CA1: ok
+
+    CA2->>Callee: Notify incoming call
+
+    alt Accept Call
+        Callee->>CA2: Accept call
+        CA2->>Serverless: REST API call to /token (identity)
+        Serverless-->>CA2: Sync & Voice tokens
+        CA2->>CA2V: Initiate call
+        CA2V->>TwiApp: Fetch TwiML (mode=callee)
+        TwiApp->>Serverless: Request TwiML (/voice)
+        Serverless-->>TwiApp: TwiML (Dial Queue)
+        TwiApp-->>CA2V: TwiML (Dial Queue)
+        CA2V->>Voice: Setup call
+        Voice-->>CA2V: Call connected
+        CA2V-->>CA2: Call connected
+        Note over Caller,Callee: Call Connected
+        Caller->>Callee: Media flows
+        Callee->>Caller: Media flows
+    else Reject Call
+        Callee->>CA2: Reject call
+        CA2->>Serverless: REST API call to /rejectCall (callSid, deliveryId)
+        Serverless->>Voice: Update call — Hangup TwiML (callSid)
+        Voice-->>CA1V: Call disconnected
+        CA1V-->>CA1: Call disconnected
+        Voice-->>Serverless: ok
+        Serverless->>TwilioSync: Update call status document (disconnectReason=Rejected)
+        TwilioSync-->>Serverless: ok
+        TwilioSync-->>CA1: Updated call status document (disconnectReason)
+    end
+```
+
+## Flow Summary
+
+1. **Call initiation** — Caller App fetches a Voice + Sync token from Serverless and initiates the call via the Twilio Voice SDK.
+2. **TwiML fetch & enqueue** — The Voice SDK hits the TwiML App, which in turn requests the actual TwiML from Serverless (`/voice`); the caller leg is enqueued.
+3. **Out-of-band callee notification** — Serverless notifies the Callee App directly (push/out-of-band channel) with `callSid` and `deliveryId`, independent of the Voice signaling path.
+4. **Call status tracking via Sync** — Caller App creates a Sync document to track call status and subscribes to updates on it.
+5. **Callee decision (`alt` branch)**:
+   - **Accept** — Callee App fetches its own tokens, initiates its Voice SDK call, fetches TwiML (`mode=callee`), and dials into the same queue — connecting both legs.
+   - **Reject** — Callee App calls `/rejectCall`; Serverless issues a Hangup TwiML update to the caller's leg via the Voice API and updates the Sync document with `disconnectReason=Rejected`, which the Caller App picks up via its subscription.
 
 ## Repository Structure
 
@@ -25,6 +114,7 @@ A demo Android application that connects a **caller** (e.g. a customer or dispat
     ├── functions/
     │   ├── token.js  # Vends Twilio Access Tokens
     │   └── voice.js  # TwiML webhook — enqueue or dequeue via queue name
+    │   └── rejectCall.js  # Hangs up call and updates status in Twilio Sync
     ├── package.json
     └── .env.sample
 ```

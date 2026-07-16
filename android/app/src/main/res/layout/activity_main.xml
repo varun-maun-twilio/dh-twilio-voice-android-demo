@@ -63,6 +63,13 @@
         android:text="Accept"
         android:layout_marginBottom="24dp"/>
 
+    <Button
+        android:id="@+id/btnReject"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Reject"
+        android:layout_marginBottom="24dp"/>
+
     <TextView
         android:id="@+id/tvCallStatus"
         android:layout_width="wrap_content"
